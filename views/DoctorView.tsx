@@ -1,10 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useHMS } from '../context/HMSContext';
-import { AppointmentStatus, Doctor, WeeklySchedule, Appointment } from '../types';
-import { Calendar, Clock, User, CheckCircle, XCircle, Trash2, Settings, Save, X, AlertTriangle, ArrowRight, Info, PlusCircle, Edit } from 'lucide-react';
+import { AppointmentStatus, Doctor, WeeklySchedule, Appointment, Patient } from '../types';
+import { Calendar, Clock, User, CheckCircle, XCircle, Trash2, Settings, Save, X, AlertTriangle, ArrowRight, Info, PlusCircle, Edit, Check, FileText, Activity, Phone, Clipboard, Pill, Stethoscope } from 'lucide-react';
 
 export const DoctorView: React.FC = () => {
-  const { currentUser, appointments, patients, cancelAppointment, updateDoctorSlots, checkScheduleConflicts, applyWeeklySchedule, bookAppointment, createPatient } = useHMS();
+  const { currentUser, appointments, patients, doctors, cancelAppointment, completeAppointment, updateDoctorSlots, checkScheduleConflicts, applyWeeklySchedule, bookAppointment, createPatient } = useHMS();
   const [activeTab, setActiveTab] = useState<'schedule' | 'manage'>('schedule');
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [showConflictModal, setShowConflictModal] = useState(false);
@@ -18,6 +18,7 @@ export const DoctorView: React.FC = () => {
 
   // Appointment Details / Cancellation Modal State
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+  const [consultationData, setConsultationData] = useState({ diagnosis: '', prescription: '', notes: '' });
   
   // Weekly Schedule State
   const [weeklyConfig, setWeeklyConfig] = useState<WeeklySchedule>({
@@ -33,6 +34,8 @@ export const DoctorView: React.FC = () => {
   // Start Date for Schedule Application
   const [scheduleStartDate, setScheduleStartDate] = useState<string>('');
   const [identifiedConflicts, setIdentifiedConflicts] = useState<Appointment[]>([]);
+  // Store resolutions: 'KEEP' means retain appointment (conflict), 'CANCEL' means delete appointment
+  const [conflictResolutions, setConflictResolutions] = useState<Record<string, 'KEEP' | 'CANCEL'>>({});
 
   // Ensure we are viewing a doctor
   if (!currentUser || !('specialty' in currentUser)) return null;
@@ -56,6 +59,17 @@ export const DoctorView: React.FC = () => {
       setWeeklyConfig(currentDoctor.defaultSchedule);
     }
   }, [currentDoctor.defaultSchedule]);
+
+  // Reset consultation form when appointment changes
+  useEffect(() => {
+    if(selectedAppointment) {
+      setConsultationData({
+        diagnosis: selectedAppointment.diagnosis || '',
+        prescription: selectedAppointment.prescription || '',
+        notes: selectedAppointment.notes || ''
+      });
+    }
+  }, [selectedAppointment]);
 
   const myAppointments = appointments
     .filter(a => a.doctorId === currentDoctor.id && a.status !== AppointmentStatus.CANCELLED)
@@ -122,9 +136,23 @@ export const DoctorView: React.FC = () => {
 
   const handleCancelAppointment = () => {
       if (selectedAppointment) {
-          cancelAppointment(selectedAppointment.id);
-          setSelectedAppointment(null);
+          if (confirm("Are you sure you want to cancel this appointment?")) {
+            cancelAppointment(selectedAppointment.id);
+            setSelectedAppointment(null);
+          }
       }
+  };
+
+  const handleCompleteConsultation = () => {
+    if (selectedAppointment) {
+      completeAppointment(
+        selectedAppointment.id, 
+        consultationData.diagnosis, 
+        consultationData.prescription, 
+        consultationData.notes
+      );
+      setSelectedAppointment(null);
+    }
   };
 
   const clearAllSlots = () => {
@@ -141,16 +169,23 @@ export const DoctorView: React.FC = () => {
     
     if (conflicts.length > 0) {
         setIdentifiedConflicts(conflicts);
+        // Default to keeping all
+        const initialResolutions = conflicts.reduce<Record<string, 'KEEP' | 'CANCEL'>>((acc, c) => ({...acc, [c.id]: 'KEEP'}), {});
+        setConflictResolutions(initialResolutions);
         setShowConflictModal(true);
     } else {
-        // No conflicts, apply directly
-        applyWeeklySchedule(currentDoctor.id, weeklyConfig, scheduleStartDate, 'KEEP');
+        // No conflicts, apply directly with empty cancel list
+        applyWeeklySchedule(currentDoctor.id, weeklyConfig, scheduleStartDate, []);
         setShowConfigModal(false);
     }
   };
 
-  const handleResolveConflicts = (action: 'CANCEL' | 'KEEP') => {
-      applyWeeklySchedule(currentDoctor.id, weeklyConfig, scheduleStartDate, action);
+  const handleApplyResolutions = () => {
+      const idsToCancel = Object.entries(conflictResolutions)
+        .filter(([_, action]) => action === 'CANCEL')
+        .map(([id]) => id);
+        
+      applyWeeklySchedule(currentDoctor.id, weeklyConfig, scheduleStartDate, idsToCancel);
       setShowConflictModal(false);
       setShowConfigModal(false);
   };
@@ -167,6 +202,17 @@ export const DoctorView: React.FC = () => {
 
   const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
   const formatTime = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const calculateAge = (dobString?: string) => {
+    if (!dobString) return 'N/A';
+    const today = new Date();
+    const dob = new Date(dobString);
+    let age = today.getFullYear() - dob.getFullYear();
+    const m = today.getMonth() - dob.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) {
+        age--;
+    }
+    return age;
+  };
 
   const slotsByDate = useMemo(() => {
       return potentialSlots.reduce((acc, slot) => {
@@ -229,13 +275,15 @@ export const DoctorView: React.FC = () => {
               ) : (
                   <div className="divide-y divide-gray-100">
                       {myAppointments.map(appt => (
-                          <div key={appt.id} className="p-6 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-gray-50 transition-colors gap-4">
+                          <div key={appt.id} onClick={() => setSelectedAppointment(appt)} className="p-6 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-gray-50 transition-colors gap-4 cursor-pointer group">
                               <div className="flex items-start sm:items-center gap-4">
-                                  <div className="bg-blue-100 text-blue-600 p-3 rounded-full shrink-0">
+                                  <div className="bg-blue-100 text-blue-600 p-3 rounded-full shrink-0 group-hover:bg-blue-600 group-hover:text-white transition-colors">
                                       <User className="h-6 w-6" />
                                   </div>
                                   <div>
-                                      <h4 className="font-medium text-gray-900">Patient ID: {appt.patientId}</h4>
+                                      <h4 className="font-medium text-gray-900">
+                                        {patients.find(p => p.id === appt.patientId)?.name || 'Guest Patient'}
+                                      </h4>
                                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-sm text-gray-500">
                                           <span className="flex items-center gap-1"><Calendar className="w-4 h-4" /> {formatDate(appt.date)}</span>
                                           <span className="flex items-center gap-1"><Clock className="w-4 h-4" /> {formatTime(appt.date)}</span>
@@ -249,11 +297,9 @@ export const DoctorView: React.FC = () => {
                               </div>
                               <div className="flex gap-2 self-end sm:self-center">
                                   <button 
-                                    onClick={() => cancelAppointment(appt.id)} 
-                                    className="flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100"
+                                    className="flex items-center gap-2 px-4 py-2 text-sm bg-white border border-gray-200 text-gray-600 rounded-lg hover:border-blue-400 hover:text-blue-600 transition-colors"
                                   >
-                                      <XCircle className="w-4 h-4" />
-                                      Cancel
+                                      View Records
                                   </button>
                               </div>
                           </div>
@@ -265,8 +311,8 @@ export const DoctorView: React.FC = () => {
 
       {activeTab === 'manage' && (
           <div className="space-y-6 animate-in fade-in duration-300">
-              {/* Toolbar */}
-              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-2xl flex flex-col xl:flex-row xl:items-center justify-between gap-4 border border-blue-100">
+             {/* ... existing manage slots UI ... */}
+             <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-2xl flex flex-col xl:flex-row xl:items-center justify-between gap-4 border border-blue-100">
                   <div className="flex items-center gap-3">
                       <div className="bg-white p-2 rounded-lg shadow-sm text-blue-600">
                           <CheckCircle className="h-5 w-5" />
@@ -384,77 +430,207 @@ export const DoctorView: React.FC = () => {
           </div>
       )}
 
-      {/* Appointment Details Modal */}
+      {/* Appointment Details & History Modal (Expanded EMR View) */}
       {selectedAppointment && (
-          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                <div className="p-6 border-b border-gray-100 bg-indigo-50 flex justify-between items-center">
-                    <h3 className="text-lg font-bold text-indigo-900 flex items-center gap-2">
-                        <Info className="w-5 h-5" />
-                        Appointment Details
-                    </h3>
-                    <button onClick={() => setSelectedAppointment(null)} className="text-indigo-400 hover:text-indigo-600">
-                        <X className="w-5 h-5" />
-                    </button>
-                </div>
-                
-                <div className="p-6 space-y-4">
-                     <div className="flex items-center gap-4 bg-gray-50 p-3 rounded-xl border border-gray-100">
-                         <div className="bg-white p-2 rounded-lg text-gray-500 shadow-sm">
-                             <Calendar className="w-5 h-5" />
-                         </div>
-                         <div>
-                             <p className="text-xs text-gray-500 uppercase font-bold tracking-wide">Date & Time</p>
-                             <p className="font-semibold text-gray-900">
-                                 {formatDate(selectedAppointment.date)} at {formatTime(selectedAppointment.date)}
-                             </p>
-                         </div>
-                     </div>
-                     
-                     <div className="flex items-center gap-4 bg-gray-50 p-3 rounded-xl border border-gray-100">
-                         <div className="bg-white p-2 rounded-lg text-gray-500 shadow-sm">
-                             <User className="w-5 h-5" />
-                         </div>
-                         <div>
-                             <p className="text-xs text-gray-500 uppercase font-bold tracking-wide">Patient</p>
-                             <p className="font-semibold text-gray-900">
-                                {(() => {
-                                    const p = patients.find(p => p.id === selectedAppointment.patientId);
-                                    return p ? p.name : `Guest (${selectedAppointment.patientId})`;
-                                })()}
-                             </p>
-                         </div>
-                     </div>
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col md:flex-row">
+              
+              {/* Left Panel: Patient Profile & History */}
+              <div className="w-full md:w-1/3 bg-gray-50 border-r border-gray-200 flex flex-col h-full">
+                 <div className="p-6 border-b border-gray-200 bg-white">
+                    <div className="flex items-center gap-4">
+                        <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 text-xl font-bold">
+                            {(() => {
+                                const p = patients.find(p => p.id === selectedAppointment.patientId);
+                                return p ? p.name.charAt(0) : 'G';
+                            })()}
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-gray-900 text-lg">
+                                {patients.find(p => p.id === selectedAppointment.patientId)?.name || 'Guest Patient'}
+                            </h3>
+                            <p className="text-xs text-gray-500">Patient ID: {selectedAppointment.patientId}</p>
+                        </div>
+                    </div>
+                    
+                    {/* Patient Details */}
+                    {(() => {
+                        const p = patients.find(p => p.id === selectedAppointment.patientId);
+                        if(p) return (
+                            <div className="mt-6 space-y-3">
+                                <div className="flex items-center gap-3 text-sm text-gray-600">
+                                    <Activity className="w-4 h-4 text-gray-400" />
+                                    <span>{calculateAge(p.dateOfBirth)} yrs • {p.gender || 'Unknown'} • {p.bloodGroup || 'N/A'}</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-gray-600">
+                                    <Phone className="w-4 h-4 text-gray-400" />
+                                    <span>{p.phone || 'No phone number'}</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-gray-600">
+                                    <Clock className="w-4 h-4 text-gray-400" />
+                                    <span>DOB: {p.dateOfBirth || 'N/A'}</span>
+                                </div>
+                            </div>
+                        );
+                        return <p className="mt-4 text-sm text-gray-500 italic">Guest patient details unavailable.</p>;
+                    })()}
+                 </div>
 
-                     <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
-                         <p className="text-xs text-gray-500 uppercase font-bold tracking-wide mb-1">Reason</p>
-                         <p className="text-sm text-gray-700 italic">"{selectedAppointment.reason || 'No reason provided'}"</p>
-                     </div>
-                </div>
+                 {/* History Timeline */}
+                 <div className="flex-grow overflow-y-auto p-4">
+                    <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-4 pl-2">Patient History</h4>
+                    <div className="space-y-4">
+                        {appointments
+                            .filter(a => a.patientId === selectedAppointment.patientId && new Date(a.date) < new Date(selectedAppointment.date) && a.status === AppointmentStatus.COMPLETED)
+                            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                            .map(historyAppt => (
+                                <div key={historyAppt.id} className="pl-4 border-l-2 border-gray-200 relative pb-2">
+                                    <div className="absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-gray-300"></div>
+                                    <p className="text-xs text-gray-500 mb-1">{formatDate(historyAppt.date)}</p>
+                                    <div className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm">
+                                        <p className="font-semibold text-gray-800 text-sm">{historyAppt.type}</p>
+                                        <p className="text-xs text-gray-500 mb-2">Dr. {doctors.find(d => d.id === historyAppt.doctorId)?.name}</p>
+                                        {historyAppt.diagnosis && (
+                                            <div className="bg-blue-50 text-blue-800 text-xs p-2 rounded mb-1">
+                                                <strong>Dx:</strong> {historyAppt.diagnosis}
+                                            </div>
+                                        )}
+                                        {historyAppt.notes && (
+                                            <p className="text-xs text-gray-600 italic">"{historyAppt.notes}"</p>
+                                        )}
+                                    </div>
+                                </div>
+                            ))
+                        }
+                        {appointments.filter(a => a.patientId === selectedAppointment.patientId && new Date(a.date) < new Date(selectedAppointment.date) && a.status === AppointmentStatus.COMPLETED).length === 0 && (
+                            <div className="text-center text-gray-400 text-sm py-8">No prior history found.</div>
+                        )}
+                    </div>
+                 </div>
+              </div>
 
-                <div className="p-4 border-t border-gray-100 bg-gray-50 flex flex-col gap-2">
-                    <button 
-                        onClick={handleCancelAppointment}
-                        className="w-full py-2.5 bg-white border border-red-200 text-red-600 hover:bg-red-50 font-medium rounded-xl shadow-sm transition-colors flex items-center justify-center gap-2"
-                    >
-                        <XCircle className="w-4 h-4" />
-                        Cancel Appointment
-                    </button>
-                    <button 
-                        onClick={() => setSelectedAppointment(null)}
-                        className="w-full py-2.5 text-gray-500 hover:bg-gray-100 font-medium rounded-xl transition-colors"
-                    >
-                        Close
-                    </button>
-                </div>
-             </div>
-          </div>
+              {/* Right Panel: Current Encounter */}
+              <div className="w-full md:w-2/3 flex flex-col h-full">
+                  <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-white shrink-0">
+                      <div>
+                          <span className="text-xs font-bold text-blue-600 uppercase tracking-wider bg-blue-50 px-2 py-1 rounded-md">
+                            {selectedAppointment.status}
+                          </span>
+                          <h2 className="text-xl font-bold text-gray-900 mt-1">Consultation</h2>
+                          <p className="text-sm text-gray-500">{formatDate(selectedAppointment.date)} at {formatTime(selectedAppointment.date)}</p>
+                      </div>
+                      <button onClick={() => setSelectedAppointment(null)} className="text-gray-400 hover:text-gray-600">
+                          <X className="w-6 h-6" />
+                      </button>
+                  </div>
+
+                  <div className="flex-grow overflow-y-auto p-8 space-y-8 bg-white">
+                      {/* Reason */}
+                      <div className="bg-amber-50 p-4 rounded-xl border border-amber-100">
+                          <h4 className="text-sm font-bold text-amber-800 uppercase tracking-wide mb-1">Reason for Visit</h4>
+                          <p className="text-lg text-gray-800 font-medium">"{selectedAppointment.reason}"</p>
+                      </div>
+
+                      {/* Doctor Inputs */}
+                      <div className="grid gap-6">
+                           <div className="space-y-2">
+                               <label className="flex items-center gap-2 text-sm font-bold text-gray-700">
+                                   <Stethoscope className="w-4 h-4 text-blue-500" />
+                                   Clinical Diagnosis
+                               </label>
+                               <input 
+                                   type="text" 
+                                   className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-shadow"
+                                   placeholder="e.g. Acute Bronchitis"
+                                   value={consultationData.diagnosis}
+                                   onChange={(e) => setConsultationData({...consultationData, diagnosis: e.target.value})}
+                                   disabled={selectedAppointment.status === AppointmentStatus.COMPLETED}
+                               />
+                           </div>
+
+                           <div className="space-y-2">
+                               <label className="flex items-center gap-2 text-sm font-bold text-gray-700">
+                                   <Pill className="w-4 h-4 text-green-500" />
+                                   Prescription / Plan
+                               </label>
+                               <textarea 
+                                   rows={3}
+                                   className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-shadow resize-none"
+                                   placeholder="e.g. Amoxicillin 500mg TDS x 5 days"
+                                   value={consultationData.prescription}
+                                   onChange={(e) => setConsultationData({...consultationData, prescription: e.target.value})}
+                                   disabled={selectedAppointment.status === AppointmentStatus.COMPLETED}
+                               />
+                           </div>
+
+                           <div className="space-y-2">
+                               <label className="flex items-center gap-2 text-sm font-bold text-gray-700">
+                                   <FileText className="w-4 h-4 text-gray-400" />
+                                   Internal Notes (Private)
+                               </label>
+                               <textarea 
+                                   rows={3}
+                                   className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-shadow resize-none bg-gray-50"
+                                   placeholder="Observations, differentials, etc."
+                                   value={consultationData.notes}
+                                   onChange={(e) => setConsultationData({...consultationData, notes: e.target.value})}
+                                   disabled={selectedAppointment.status === AppointmentStatus.COMPLETED}
+                               />
+                           </div>
+                      </div>
+                  </div>
+
+                  {/* Footer Actions */}
+                  <div className="p-6 border-t border-gray-100 bg-gray-50 flex justify-between items-center shrink-0">
+                      {selectedAppointment.status !== AppointmentStatus.COMPLETED ? (
+                         <>
+                            <button 
+                                onClick={handleCancelAppointment}
+                                className="text-red-600 font-medium text-sm hover:underline"
+                            >
+                                Cancel Appointment
+                            </button>
+                            <div className="flex gap-3">
+                                <button 
+                                    onClick={() => setSelectedAppointment(null)}
+                                    className="px-6 py-2.5 text-gray-600 font-medium hover:bg-gray-200 rounded-xl transition-colors"
+                                >
+                                    Close
+                                </button>
+                                <button 
+                                    onClick={handleCompleteConsultation}
+                                    className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg shadow-blue-200 transition-all flex items-center gap-2"
+                                >
+                                    <Save className="w-4 h-4" />
+                                    Complete Consultation
+                                </button>
+                            </div>
+                         </>
+                      ) : (
+                          <div className="w-full flex justify-between items-center">
+                              <span className="flex items-center gap-2 text-green-700 font-bold">
+                                  <CheckCircle className="w-5 h-5" />
+                                  Consultation Completed
+                              </span>
+                              <button 
+                                    onClick={() => setSelectedAppointment(null)}
+                                    className="px-6 py-2.5 bg-white border border-gray-300 text-gray-700 font-medium hover:bg-gray-50 rounded-xl transition-colors"
+                                >
+                                    Close Record
+                                </button>
+                          </div>
+                      )}
+                  </div>
+              </div>
+           </div>
+        </div>
       )}
 
       {/* Weekly Config Modal */}
       {showConfigModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+             {/* ... existing config modal content ... */}
              <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50 shrink-0">
                 <div>
                     <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
@@ -595,8 +771,8 @@ export const DoctorView: React.FC = () => {
       {/* Conflict Resolution Modal */}
       {showConflictModal && (
           <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                <div className="p-6 bg-amber-50 border-b border-amber-100">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[85vh]">
+                <div className="p-6 bg-amber-50 border-b border-amber-100 shrink-0">
                     <div className="flex items-center gap-3 mb-2">
                         <div className="p-2 bg-amber-100 rounded-full text-amber-600">
                             <AlertTriangle className="w-6 h-6" />
@@ -604,44 +780,83 @@ export const DoctorView: React.FC = () => {
                         <h3 className="text-lg font-bold text-gray-900">Schedule Conflicts Detected</h3>
                     </div>
                     <p className="text-sm text-amber-800">
-                        The new schedule removes slots for <strong>{identifiedConflicts.length} existing appointments</strong>.
+                        The new schedule conflicts with <strong>{identifiedConflicts.length} existing appointments</strong>. 
+                        Please decide whether to keep or cancel each appointment.
                     </p>
                 </div>
                 
-                <div className="p-6 max-h-[40vh] overflow-y-auto">
-                    <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Impacted Appointments</h4>
-                    <div className="space-y-3">
-                        {identifiedConflicts.map(appt => (
-                            <div key={appt.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
-                                <div>
-                                    <p className="text-sm font-medium text-gray-900">{formatDate(appt.date)} at {formatTime(appt.date)}</p>
-                                    <p className="text-xs text-gray-500">Patient ID: {appt.patientId}</p>
-                                </div>
-                                <span className="text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded">Will be lost</span>
-                            </div>
-                        ))}
-                    </div>
+                <div className="bg-white border-b border-gray-100 px-6 py-3 flex justify-end gap-3 shrink-0">
+                    <button 
+                        onClick={() => {
+                            const allKeep = identifiedConflicts.reduce<Record<string, 'KEEP' | 'CANCEL'>>((acc, c) => ({...acc, [c.id]: 'KEEP'}), {});
+                            setConflictResolutions(allKeep);
+                        }}
+                        className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                    >
+                        Set all to Keep
+                    </button>
+                    <button 
+                         onClick={() => {
+                            const allCancel = identifiedConflicts.reduce<Record<string, 'KEEP' | 'CANCEL'>>((acc, c) => ({...acc, [c.id]: 'CANCEL'}), {});
+                            setConflictResolutions(allCancel);
+                        }}
+                        className="text-xs font-medium text-red-600 hover:text-red-800 hover:underline"
+                    >
+                        Set all to Cancel
+                    </button>
                 </div>
 
-                <div className="p-4 border-t border-gray-100 bg-gray-50 flex flex-col gap-3">
-                    <button 
-                        onClick={() => handleResolveConflicts('CANCEL')}
-                        className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white font-medium rounded-xl shadow-sm transition-colors text-sm flex items-center justify-center gap-2"
-                    >
-                        <XCircle className="w-4 h-4" />
-                        Cancel Conflicting Appointments
-                    </button>
-                    <button 
-                        onClick={() => handleResolveConflicts('KEEP')}
-                        className="w-full py-2.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium rounded-xl shadow-sm transition-colors text-sm"
-                    >
-                        Keep Appointments (Merge with new schedule)
-                    </button>
+                <div className="p-6 overflow-y-auto space-y-3 bg-gray-50/50">
+                    {identifiedConflicts.map(appt => {
+                        const action = conflictResolutions[appt.id] || 'KEEP';
+                        return (
+                            <div key={appt.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl border transition-all ${action === 'CANCEL' ? 'bg-red-50 border-red-100 opacity-80' : 'bg-white border-gray-200 shadow-sm'}`}>
+                                <div className="mb-3 sm:mb-0">
+                                    <div className="flex items-center gap-2">
+                                        <p className="text-sm font-bold text-gray-900">
+                                            {formatDate(appt.date)} <span className="text-gray-400">|</span> {formatTime(appt.date)}
+                                        </p>
+                                        <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${action === 'CANCEL' ? 'bg-red-200 text-red-800' : 'bg-green-100 text-green-800'}`}>
+                                            {action === 'CANCEL' ? 'To Be Cancelled' : 'Keeping'}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-gray-500 mt-1">Patient: {patients.find(p => p.id === appt.patientId)?.name || appt.patientId}</p>
+                                    <p className="text-xs text-gray-500">Reason: {appt.reason || 'N/A'}</p>
+                                </div>
+                                
+                                <div className="flex bg-gray-100 p-1 rounded-lg self-start sm:self-center shrink-0">
+                                     <button 
+                                        onClick={() => setConflictResolutions(prev => ({...prev, [appt.id]: 'KEEP'}))}
+                                        className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center gap-1 ${action === 'KEEP' ? 'bg-white text-green-700 shadow-sm ring-1 ring-black/5' : 'text-gray-500 hover:text-gray-700'}`}
+                                     >
+                                        <Check className="w-3 h-3" />
+                                        Keep
+                                     </button>
+                                     <button 
+                                        onClick={() => setConflictResolutions(prev => ({...prev, [appt.id]: 'CANCEL'}))}
+                                        className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center gap-1 ${action === 'CANCEL' ? 'bg-red-600 text-white shadow-sm' : 'text-gray-500 hover:text-red-600'}`}
+                                     >
+                                        <X className="w-3 h-3" />
+                                        Cancel
+                                     </button>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+
+                <div className="p-4 border-t border-gray-100 bg-white shrink-0 flex justify-end gap-3">
                     <button 
                         onClick={() => setShowConflictModal(false)}
-                        className="text-center text-xs text-gray-500 hover:text-gray-700 mt-1"
+                        className="px-5 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
                     >
-                        Abort Operation
+                        Go Back
+                    </button>
+                    <button 
+                        onClick={handleApplyResolutions}
+                        className="px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-md transition-colors"
+                    >
+                        Confirm & Apply Schedule
                     </button>
                 </div>
             </div>

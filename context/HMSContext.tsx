@@ -16,15 +16,16 @@ interface HMSContextType {
   registerDoctor: (name: string, email: string, specialty: string, hospital: string) => void;
   enterAsPatient: () => void;
   registerGuestPatient: (name: string, email: string) => Patient;
-  createPatient: (name: string, email?: string) => Patient; // New method
+  createPatient: (name: string, email?: string) => Patient;
   logout: () => void;
   navigate: (view: AppView) => void;
   bookAppointment: (doctorId: string, date: string, reason: string, patientId?: string) => void;
   rescheduleAppointment: (appointmentId: string, newDate: string) => void;
   cancelAppointment: (appointmentId: string) => void;
+  completeAppointment: (appointmentId: string, diagnosis: string, prescription: string, notes: string) => void; // New method
   updateDoctorSlots: (doctorId: string, newSlots: string[]) => void;
   checkScheduleConflicts: (doctorId: string, schedule: WeeklySchedule, startDateIso: string) => Appointment[];
-  applyWeeklySchedule: (doctorId: string, schedule: WeeklySchedule, startDateIso: string, resolveConflicts: 'CANCEL' | 'KEEP') => void;
+  applyWeeklySchedule: (doctorId: string, schedule: WeeklySchedule, startDateIso: string, appointmentsToCancelIds: string[]) => void;
   addNotification: (message: string, userId: string) => void;
   markNotificationRead: (id: string) => void;
 }
@@ -214,11 +215,24 @@ export const HMSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           a.id === appointmentId ? { ...a, status: AppointmentStatus.CANCELLED } : a
       ));
 
-      // Note: We do NOT add the slot back to availableSlots.
-      // This leaves the slot as "unavailable" (neither booked nor available), 
-      // allowing the doctor to decide whether to re-open it.
-
       if(currentUser) addNotification("Appointment cancelled", currentUser.id);
+  };
+
+  const completeAppointment = (appointmentId: string, diagnosis: string, prescription: string, notes: string) => {
+    const appointment = appointments.find(a => a.id === appointmentId);
+    if (!appointment) return;
+
+    setAppointments(prev => prev.map(a => 
+      a.id === appointmentId ? { 
+        ...a, 
+        status: AppointmentStatus.COMPLETED,
+        diagnosis,
+        prescription,
+        notes
+      } : a
+    ));
+
+    addNotification("Consultation completed. Records updated.", appointment.patientId);
   };
 
   const updateDoctorSlots = (doctorId: string, newSlots: string[]) => {
@@ -274,7 +288,7 @@ export const HMSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return conflicts;
   };
 
-  const applyWeeklySchedule = (doctorId: string, schedule: WeeklySchedule, startDateIso: string, resolveConflicts: 'CANCEL' | 'KEEP') => {
+  const applyWeeklySchedule = (doctorId: string, schedule: WeeklySchedule, startDateIso: string, appointmentsToCancelIds: string[]) => {
       const startDate = new Date(startDateIso);
       startDate.setMinutes(0,0,0);
       const endDate = new Date(startDate);
@@ -282,58 +296,54 @@ export const HMSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       const conflicts = checkScheduleConflicts(doctorId, schedule, startDateIso);
 
-      // 1. Handle Conflicts
-      if (resolveConflicts === 'CANCEL' && conflicts.length > 0) {
-          const conflictIds = new Set(conflicts.map(c => c.id));
+      // 1. Cancel specific appointments requested by the user
+      if (appointmentsToCancelIds.length > 0) {
+          const toCancelSet = new Set(appointmentsToCancelIds);
+          
           setAppointments(prev => prev.map(a => 
-              conflictIds.has(a.id) ? { ...a, status: AppointmentStatus.CANCELLED } : a
+              toCancelSet.has(a.id) ? { ...a, status: AppointmentStatus.CANCELLED } : a
           ));
-          conflicts.forEach(c => {
+          
+          appointments.filter(a => toCancelSet.has(a.id)).forEach(c => {
              addNotification(`Appointment on ${new Date(c.date).toLocaleString()} cancelled due to schedule change.`, c.patientId);
           });
-          addNotification(`${conflicts.length} conflicting appointments cancelled.`, doctorId);
+          addNotification(`${appointmentsToCancelIds.length} conflicting appointments cancelled.`, doctorId);
       }
-      // If 'KEEP', we do nothing to the appointments, they stay as SCHEDULED.
+      
+      const keptConflictCount = conflicts.length - appointmentsToCancelIds.length;
+      if (keptConflictCount > 0) {
+        addNotification(`Schedule updated. ${keptConflictCount} conflicting appointments were retained.`, doctorId);
+      }
 
       // 2. Update Available Slots
-      // We need to:
-      // a) Remove existing 'availableSlots' that fall within the start-end range
-      // b) Add new generated slots that are NOT booked (unless we cancelled them, then they are open)
-      
       setDoctors(prevDocs => {
           return prevDocs.map(doc => {
             if (doc.id !== doctorId) return doc;
 
             const newAllowedSlots = generateSlotsForRange(schedule, startDate, 7);
             
-            // Filter out slots that are outside the target range (keep them)
+            // Keep existing available slots outside the range
             const keptSlots = doc.availableSlots.filter(s => {
                 const d = new Date(s);
                 return d < startDate || d >= endDate;
             });
 
-            // Calculate which of the newAllowedSlots are actually available
-            // If we KEPPT appointments, those times are NOT available.
-            // If we CANCELLED appointments, those times ARE available.
-            
-            // Get current active appointments (re-fetch logic since state might not have flushed if we just called setAppointments)
-            // But we can use the 'conflicts' array and 'resolveConflicts' logic
+            // Calculate active appointments in the window
+            // We must exclude the ones we just requested to cancel
             const activeApptsInWindow = appointments.filter(a => {
                 if (a.doctorId !== doctorId || a.status === AppointmentStatus.CANCELLED) return false;
+                // Exclude the ones we are about to cancel
+                if (appointmentsToCancelIds.includes(a.id)) return false;
+                
                 const d = new Date(a.date);
-                // If we are cancelling conflicts, filter them out of "active" list logic effectively
-                if (resolveConflicts === 'CANCEL' && conflicts.some(c => c.id === a.id)) return false;
                 return d >= startDate && d < endDate;
             }).map(a => a.date);
 
             const finalNewSlots = newAllowedSlots.filter(s => !activeApptsInWindow.includes(s));
-
-            // Merge
             const merged = [...keptSlots, ...finalNewSlots].sort();
-            
+
             // Sync with current user state immediately for UI response
             if (currentUser && currentUser.id === doctorId) {
-                // This is a side effect inside a reducer-like map, but safe in this context
                 setTimeout(() => {
                     updateCurrentUserIfDoctor(doctorId, d => ({ ...d, availableSlots: merged, defaultSchedule: schedule }));
                 }, 0);
@@ -346,10 +356,6 @@ export const HMSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             };
           });
       });
-      
-      if (resolveConflicts === 'KEEP') {
-        addNotification("Schedule updated. Conflicting appointments were retained.", doctorId);
-      }
   };
 
   const markNotificationRead = (id: string) => {
@@ -377,6 +383,7 @@ export const HMSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       bookAppointment,
       rescheduleAppointment,
       cancelAppointment,
+      completeAppointment,
       updateDoctorSlots,
       checkScheduleConflicts,
       applyWeeklySchedule,

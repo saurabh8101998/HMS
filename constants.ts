@@ -88,6 +88,10 @@ export const MOCK_PATIENT: Patient = {
   id: 'p1',
   name: 'John Doe',
   email: 'john.doe@example.com',
+  dateOfBirth: '1985-04-12',
+  gender: 'Male',
+  phone: '+1 (555) 012-3456',
+  bloodGroup: 'O+'
 };
 
 export const INITIAL_APPOINTMENTS: Appointment[] = [
@@ -95,10 +99,25 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     id: 'a1',
     doctorId: 'd1',
     patientId: 'p1',
-    date: getFutureDate(-2, 10), // Past appointment
+    date: getFutureDate(-30, 10), // Past appointment 1 month ago
     status: AppointmentStatus.COMPLETED,
     type: 'Checkup',
-    reason: 'Regular heart checkup'
+    reason: 'Regular heart checkup',
+    diagnosis: 'Mild Hypertension',
+    prescription: 'Lisinopril 10mg daily',
+    notes: 'Patient advised to reduce sodium intake and increase cardio exercise.'
+  },
+  {
+    id: 'a2',
+    doctorId: 'd4',
+    patientId: 'p1',
+    date: getFutureDate(-60, 14), // Past appointment 2 months ago
+    status: AppointmentStatus.COMPLETED,
+    type: 'Consultation',
+    reason: 'Flu symptoms',
+    diagnosis: 'Seasonal Influenza',
+    prescription: 'Rest, fluids, Ibuprofen',
+    notes: 'Recovered fully after 5 days.'
   }
 ];
 

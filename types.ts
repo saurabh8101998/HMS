@@ -41,6 +41,11 @@ export interface Patient {
   id: string;
   name: string;
   email: string;
+  // Demographics
+  dateOfBirth?: string; // ISO date string YYYY-MM-DD
+  gender?: 'Male' | 'Female' | 'Other';
+  phone?: string;
+  bloodGroup?: string;
 }
 
 export interface Appointment {
@@ -51,6 +56,10 @@ export interface Appointment {
   status: AppointmentStatus;
   type: string; // e.g., "Checkup", "Consultation"
   reason?: string;
+  // Clinical Data
+  diagnosis?: string;
+  prescription?: string;
+  notes?: string; // Internal doctor notes
 }
 
 export interface Notification {
